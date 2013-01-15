@@ -2,6 +2,7 @@ from fabric.api import run,sudo,env,put,settings
 import time
 from boto import ec2,vpc,config
 from boto.ec2.regioninfo import RegionInfo
+from boto.exception import EC2ResponseError
 
 import os
 
@@ -131,12 +132,13 @@ def add_nodes(total_nodes, vpc_id):
         print "nothing to do"
         return
     #Add nodes
-    new_node_ips=[]
+    #new_node_ips=[]
+    node_ips=[i.private_ip_address for i in existing_instances]
     for i in range(0,int(total_nodes)-len(existing_instances)):
         new=__deploy_node(subnet_id=bootstrap_instance.subnet_id)
-        new_node_ips.append(new.private_ip_address)
+        node_ips.append(new.private_ip_address)
         
-    __add_nodes_to_cluster(bootstrap_instance=bootstrap_instance, node_ips=new_node_ips)
+    __add_nodes_to_cluster(bootstrap_instance=bootstrap_instance, node_ips=node_ips)
 
 
 def __add_nodes_to_cluster(bootstrap_instance, node_ips):
@@ -147,8 +149,6 @@ def __add_nodes_to_cluster(bootstrap_instance, node_ips):
     env.user=CLUSTER_USER
     env.host_string= "{0}@{1}:22".format(env.user, env.host)
 
-    for ip in node_ips:
-        run("ssh-keyscan -H {0} >> ~/.ssh/known_hosts".format(ip))
     
     print "Adding new nodes to cluster"
     __stitch_cluster(node_ips=node_ips)
@@ -171,7 +171,7 @@ def __setup_vertica(bootstrap, db_name):
     put(local_path=env.key_filename,remote_path=CLUSTER_KEY_PATH,use_sudo=True,mode=0400)
     
     #stitch cluster
-    __stitch_cluster(node_ips=bootstrap.private_ip_address)
+    __stitch_cluster(node_ips=[bootstrap.private_ip_address])
 
     #create EULA acceptance file
     sudo("echo 'S:a\nT:{0}\nU:500' > /opt/vertica/config/d5415f948449e9d4c421b568f2411140.dat".format(time.time()))
@@ -185,6 +185,9 @@ def __setup_vertica(bootstrap, db_name):
     run("/opt/vertica/bin/adminTools -t create_db -s {bootstrap_ip} -d {db_name} -p {db_password} -l {license_path}".format(bootstrap_ip=bootstrap.private_ip_address, db_name=db_name, db_password=db_name, license_path=CLUSTER_LICENSE_PATH))
 
 def __stitch_cluster(node_ips):
+    for ip in node_ips:
+        run("ssh-keyscan -H {0} >> ~/.ssh/known_hosts".format(ip))
+
     node_ip_list=','.join(node_ips)
     sudo("/opt/vertica/sbin/vcluster -s {bootstrap_ip} -L {license_path} -k {key_path}".format(bootstrap_ip=node_ip_list, license_path=CLUSTER_LICENSE_PATH, key_path=CLUSTER_KEY_PATH))
 
@@ -233,17 +236,20 @@ def __create_vpc():
 
 def __authorize_security_group(sg_id):
     sg=ec2_conn.get_all_security_groups(group_ids=[sg_id])[0]
-    sg.authorize(ip_protocol="icmp",from_port=0,to_port=-1,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="icmp",from_port=30,to_port=-1,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=22,to_port=22,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=80,to_port=80,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=443,to_port=443,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=4803,to_port=4805,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=5433,to_port=5434,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=5444,to_port=5444,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="tcp",from_port=5450,to_port=5450,cidr_ip=AUTHORIZED_IP_BLOCKS)
-    sg.authorize(ip_protocol="udp",from_port=4803,to_port=4805,cidr_ip=AUTHORIZED_IP_BLOCKS)
-
+    try:
+        sg.authorize(ip_protocol="icmp",from_port=0,to_port=-1,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="icmp",from_port=30,to_port=-1,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=22,to_port=22,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=80,to_port=80,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=443,to_port=443,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=4803,to_port=4805,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=5433,to_port=5434,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=5444,to_port=5444,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="tcp",from_port=5450,to_port=5450,cidr_ip=AUTHORIZED_IP_BLOCKS)
+        sg.authorize(ip_protocol="udp",from_port=4803,to_port=4805,cidr_ip=AUTHORIZED_IP_BLOCKS)
+    except EC2ResponseError:
+        pass
+    
 def __deploy_node(subnet_id):
     """Deploy instance to specified subnet
     """
@@ -262,7 +268,7 @@ def __deploy_node(subnet_id):
         if (instance.state != u'pending'):
             break
         time.sleep(5)
-    time.sleep(30)
+    time.sleep(45)
     print 'Successfully created node in EC2'
     
     return instance
