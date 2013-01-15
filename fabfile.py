@@ -177,12 +177,15 @@ def __setup_vertica(bootstrap, db_name):
     sudo("echo 'S:a\nT:{0}\nU:500' > /opt/vertica/config/d5415f948449e9d4c421b568f2411140.dat".format(time.time()))
     
     __copy_ssh_keys(host=env.host,user=DB_USER)
-    
+    __create_database(bootstrap.ip_address, db_name)
+
+def __create_database(bootstrap_ip, db_name):
     #create database
     env.user=DB_USER
     env.host_string= "{0}@{1}:22".format(env.user, env.host)
     
-    run("/opt/vertica/bin/adminTools -t create_db -s {bootstrap_ip} -d {db_name} -p {db_password} -l {license_path}".format(bootstrap_ip=bootstrap.private_ip_address, db_name=db_name, db_password=db_name, license_path=CLUSTER_LICENSE_PATH))
+    run("/opt/vertica/bin/adminTools -t create_db -s {bootstrap_ip} -d {db_name} -p {db_password} -l {license_path}".format(bootstrap_ip=bootstrap_ip, db_name=db_name, db_password=db_name, license_path=CLUSTER_LICENSE_PATH))
+
 
 def __stitch_cluster(node_ips):
     for ip in node_ips:
