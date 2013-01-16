@@ -67,8 +67,28 @@ def print_status():
         print s
     
 
+def terminate_cluster(vpc_id):
+    """ Terminate a cluster with extreme prejudice
+    """
+    subnet=vpc_conn.get_all_subnets(filters=[("vpcId",vpc_id)])[0]
+    existing_instances=[i for r in ec2_conn.get_all_instances(filters={"subnet-id":subnet.id}) for i in r.instances if i.state != 'terminated']
+    print "Killing {0} instances...".format(len(existing_instances))
+    for i in existing_instances:
+        i.terminate()
+        while True:  # need to wait while instance.state is u'pending'
+            print 'instance is {0}'.format(i.state)
+            i.update()
+            if (i.state == u'terminated'):
+                break
+            time.sleep(5)
 
-def deploy_cluster(num_nodes, vpc_id=None, db_name="dw", eip_allocation_id=None):
+        print "\tInstance terminated"
+    
+    print "Deleting VPC..."
+    vpc_conn.delete_vpc(vpc_id)
+    print "Success"
+
+def deploy_cluster(total_nodes, vpc_id=None, db_name="dw", eip_allocation_id=None):
     """Deploy Bootstrap node along with VPC, Subnet and Elastic IP
        Add nodes to reach specified num_nodes
        eip_allocation_id : Elastic IP Allocation ID if you want to re-use existing IP
@@ -78,7 +98,9 @@ def deploy_cluster(num_nodes, vpc_id=None, db_name="dw", eip_allocation_id=None)
     if vpc_id:
         subnet=vpc_conn.get_all_subnets(filters=[("vpcId",vpc_id)])[0]
     else:
-        subnet=__create_vpc()
+        sn_vpc=__create_vpc()
+        subnet=sn_vpc[0]
+        vpc_id=sn_vpc[1].id
     
     bootstrap_instance=None
     existing_instances=[i for r in ec2_conn.get_all_instances(filters={"subnet-id":subnet.id}) for i in r.instances if i.state != 'terminated']
@@ -99,23 +121,26 @@ def deploy_cluster(num_nodes, vpc_id=None, db_name="dw", eip_allocation_id=None)
             eip_allocation_id=ec2_conn.allocate_address(domain="vpc").allocation_id
         
         ec2_conn.associate_address(bootstrap_instance.id, None, eip_allocation_id)
+        time.sleep(30)
         print "\tElastic Ip: allocation_id:{0} public_ip:{1}".format(eip_allocation_id, bootstrap_instance.ip_address)
         
         print "\nAuthorizing security group..."
         __authorize_security_group(bootstrap_instance.groups[0].id)
-
+    
     #Print set up set up steps
     __setup_vertica(bootstrap=bootstrap_instance, db_name=db_name)
     
+    __make_cluster_whole(total_nodes=total_nodes,vpc_id=vpc_id)
+
     print "Success!"
     print "Connect to the bootstrap node:"
     print "\tssh -i {0} {1}@{2}".format(env.key_filename, "root", bootstrap_instance.ip_address)
     print "Connect to the database:"
     print "\tvsql -U {0} -w {1} -h {2} -d {3}".format("dbadmin",db_name,bootstrap_instance.ip_address,db_name)
     
-    add_nodes(total_nodes=num_nodes,vpc_id=vpc_id)
-
-def add_nodes(total_nodes, vpc_id):
+def __make_cluster_whole(total_nodes, vpc_id):
+    """ Makes sure that cluster in vpc has total_nodes number of nodes
+    """
     print "Making sure cluster has {0} nodes".format(total_nodes)
     subnet=vpc_conn.get_all_subnets(filters=[("vpcId",vpc_id)])[0]
     
@@ -137,32 +162,26 @@ def add_nodes(total_nodes, vpc_id):
     for i in range(0,int(total_nodes)-len(existing_instances)):
         new=__deploy_node(subnet_id=bootstrap_instance.subnet_id)
         node_ips.append(new.private_ip_address)
-        
-    __add_nodes_to_cluster(bootstrap_instance=bootstrap_instance, node_ips=node_ips)
 
+    print "Adding new nodes to cluster"
 
-def __add_nodes_to_cluster(bootstrap_instance, node_ips):
-    """ Deploys new vertica node to VPC and then adds it to the cluster
-    """
-    print "Deploying new node"
     env.host=bootstrap_instance.ip_address
     env.user=CLUSTER_USER
     env.host_string= "{0}@{1}:22".format(env.user, env.host)
 
-    
-    print "Adding new nodes to cluster"
     __stitch_cluster(node_ips=node_ips)
-    #sudo("/opt/vertica/sbin/vcluster -A {new_ips} -k {pem}".format(new_ips=','.join(node_ips), pem=CLUSTER_KEY_PATH))
+    
     print "Nodes added successfully!"
 
 def __setup_vertica(bootstrap, db_name):
     """ Runs set up commands on remote bootstrap node
     """
     print "Setting up cluster and creating database..."
+    bootstrap.update()
     env.host=bootstrap.ip_address
     env.user=CLUSTER_USER
     env.host_string= "{0}@{1}:22".format(env.user, env.host)
-
+    
     #transfer license file
     sudo("mkdir -p {0}".format(os.path.dirname(CLUSTER_LICENSE_PATH)))
     put(local_path=LOCAL_LICENSE_PATH,remote_path=CLUSTER_LICENSE_PATH,use_sudo=True)
@@ -177,14 +196,15 @@ def __setup_vertica(bootstrap, db_name):
     sudo("echo 'S:a\nT:{0}\nU:500' > /opt/vertica/config/d5415f948449e9d4c421b568f2411140.dat".format(time.time()))
     
     __copy_ssh_keys(host=env.host,user=DB_USER)
-    __create_database(bootstrap.ip_address, db_name)
+    __create_database(bootstrap, db_name)
 
-def __create_database(bootstrap_ip, db_name):
+def __create_database(bootstrap, db_name):
     #create database
     env.user=DB_USER
+    env.host=bootstrap.ip_address
     env.host_string= "{0}@{1}:22".format(env.user, env.host)
     
-    run("/opt/vertica/bin/adminTools -t create_db -s {bootstrap_ip} -d {db_name} -p {db_password} -l {license_path}".format(bootstrap_ip=bootstrap_ip, db_name=db_name, db_password=db_name, license_path=CLUSTER_LICENSE_PATH))
+    run("/opt/vertica/bin/adminTools -t create_db -s {bootstrap_ip} -d {db_name} -p {db_password} -l {license_path}".format(bootstrap_ip=bootstrap.private_ip_address, db_name=db_name, db_password=db_name, license_path=CLUSTER_LICENSE_PATH))
 
 
 def __stitch_cluster(node_ips):
@@ -213,7 +233,7 @@ def __copy_ssh_keys(host, user):
 
 def __create_vpc():
     """Sets up a VPC, Subnet, Internet Gateway, Route Table
-       Returns the Subnet
+       Returns a tuple with Subnet and VPC
     """
     print "Creating VPC..."
     b_vpc=vpc_conn.create_vpc('10.0.0.0/24')
@@ -235,7 +255,7 @@ def __create_vpc():
 
     vpc_conn.associate_route_table(route_table.id, subnet.id)
     
-    return subnet
+    return (subnet, b_vpc)
 
 def __authorize_security_group(sg_id):
     sg=ec2_conn.get_all_security_groups(group_ids=[sg_id])[0]
