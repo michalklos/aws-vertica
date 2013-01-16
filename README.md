@@ -31,18 +31,18 @@ SSH Keys
 Commands
 ===========
 
-#check whats going on
+check whats going on
 fab --set region='us-east-1' print_status
 
-#deploy a new cluster
+deploy a new cluster
 fab --set region='us-east-1' deploy_cluster:total_nodes=3
 
-#deploy a new cluster using an existing elastic ip for bootstrap/gateway instance
+deploy a new cluster using an existing elastic ip for bootstrap/gateway instance
 fab --set region='us-east-1' deploy_cluster:total_nodes=3,eip_allocation_id=eipalloc-xxxxxx
 
-#deploy to an existing vpc cluster, it will consider the gateway node to be the bootstrap
-# if there are existing nodes in the cluster, it will attempt to bring the number of
-# nodes in the cluster to total_nodes
+deploy to an existing vpc cluster, it will consider the gateway node to be the bootstrap
+ if there are existing nodes in the cluster, it will attempt to bring the number of
+ nodes in the cluster to total_nodes
 fab --set region='us-east-1' deploy_cluster:total_nodes=3,vpc_id=vpc-xxxxxxxx
 
 
